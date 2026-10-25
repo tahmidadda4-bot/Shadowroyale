@@ -1,0 +1,86 @@
+name: Build Shadow Royale Offline APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'shadow-royale-source.zip'
+      - '.github/workflows/build-apk-from-zip.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find and extract project archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f shadow-royale-source.zip ]; then
+            echo 'Missing shadow-royale-source.zip in repository root.'
+            echo 'Upload the downloaded Shadow Royale project ZIP and name it exactly shadow-royale-source.zip.'
+            exit 1
+          fi
+          mkdir -p extracted
+          unzip -q shadow-royale-source.zip -d extracted
+          PROJECT_DIR="$(find extracted -type f -name pubspec.yaml -print -quit | xargs -r dirname)"
+          if [ -z "${PROJECT_DIR:-}" ] || [ ! -f "$PROJECT_DIR/pubspec.yaml" ]; then
+            echo 'Could not find pubspec.yaml inside the ZIP.'
+            find extracted -maxdepth 4 -type f | head -100
+            exit 1
+          fi
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Flutter project found at: $PROJECT_DIR"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate Android platform files if missing
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          if [ ! -d android ]; then
+            flutter create --platforms=android --org com.shadowroyale --project-name shadow_royale .
+          fi
+
+      - name: Get Flutter packages
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: flutter pub get
+
+      - name: Run tests (diagnostic)
+        working-directory: ${{ env.PROJECT_DIR }}
+        continue-on-error: true
+        run: flutter test
+
+      - name: Analyze source (diagnostic)
+        working-directory: ${{ env.PROJECT_DIR }}
+        continue-on-error: true
+        run: flutter analyze
+
+      - name: Build release APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: flutter build apk --release
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-royale-offline-apk
+          path: ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
